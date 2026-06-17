@@ -1,57 +1,84 @@
 // ============================================================
-// PANCAKE V2 + GOOGLE GEMINI AI - Auto Reply Webhook
+// PANCAKE V2 + GOOGLE GEMINI AI - Auto Reply
 // Bệnh viện thẩm mỹ — MIỄN PHÍ
 // ============================================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const PANCAKE_API_KEY = process.env.PANCAKE_API_KEY;
+const PAGE_ID = process.env.PAGE_ID;
 
-// ============================================================
-// SYSTEM PROMPT - Chỉnh sửa thông tin bệnh viện tại đây
-// ============================================================
-const SYSTEM_PROMPT = `Bạn là tư vấn viên chuyên nghiệp của Bệnh viện Thẩm Mỹ [TÊN BỆNH VIỆN].
+const SYSTEM_PROMPT = `Bạn là tư vấn viên chuyên nghiệp của Bệnh viện Thẩm Mỹ Dr Trần Thái Hưng.
 Nhiệm vụ của bạn là tư vấn, giải đáp thắc mắc và hỗ trợ khách hàng đặt lịch các dịch vụ thẩm mỹ.
 
 DỊCH VỤ HIỆN CÓ:
 - Nâng ngực: nâng ngực nội soi, túi ngực Mentor/Motiva/Bellagel
 - Hút mỡ: hút mỡ tay, hút mỡ chân, hút mỡ bụng, hút mỡ lưng, hút mỡ đùi
 - Treo sa trễ: treo ngực sa trễ, treo mặt, treo cơ vòng mắt
-- [Bổ sung thêm dịch vụ khác nếu có]
 
 QUY TẮC TƯ VẤN:
 - Xưng "em", gọi khách là "chị" (hoặc "anh" nếu khách là nam)
 - Giọng điệu nhẹ nhàng, chuyên nghiệp, tạo sự tin tưởng
 - KHÔNG báo giá cụ thể qua tin nhắn — mời khách đến khám miễn phí hoặc để lại SĐT
-- Khi khách hỏi giá: "Giá dịch vụ phụ thuộc vào tình trạng cụ thể của chị, để tư vấn chính xác em mời chị đến khám miễn phí hoặc để lại SĐT để bác sĩ tư vấn trực tiếp ạ"
+- Khi khách hỏi giá: mời khách đến khám miễn phí hoặc để lại SĐT để bác sĩ tư vấn trực tiếp
 - Khi khách muốn đặt lịch: hỏi tên, SĐT, dịch vụ quan tâm và thời gian phù hợp
-- Nếu câu hỏi vượt ngoài phạm vi: "Để em chuyển thông tin đến bác sĩ tư vấn cho chị nhé ạ"
 - Trả lời ngắn gọn, không quá 4-5 câu mỗi lần
-- Luôn kết thúc bằng câu hỏi gợi mở để khách tiếp tục tương tác`;
+- Luôn kết thúc bằng câu hỏi gợi mở`;
 
-// Lưu lịch sử hội thoại theo conversation_id
+// Lưu tin nhắn đã xử lý để tránh reply trùng
+const processedMessages = new Set();
+// Lưu lịch sử hội thoại
 const conversationHistory = {};
 
 export default async function handler(req, res) {
+  // Endpoint kiểm tra server còn sống
+  if (req.method === 'GET') {
+    return res.status(200).json({ status: 'ok', message: 'Pancake AI Bot đang chạy!' });
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
   try {
+    // Nhận webhook từ Pancake khi có tin nhắn mới
     const body = req.body;
     console.log('Webhook received:', JSON.stringify(body, null, 2));
 
-    const messages = body.messages || [];
-    const conversationId = body.conversation_id || body.id;
-    const pageId = body.page_id;
+    // Lấy thông tin tin nhắn
+    const event = body.event;
+    const conversation = body.conversation || {};
+    const message = body.message || {};
 
-    // Chỉ xử lý tin nhắn từ khách
-    const userMessage = messages.find(m => m.from_customer === true || m.type === 'incoming');
-
-    if (!userMessage || !userMessage.message) {
-      return res.status(200).json({ status: 'ignored' });
+    // Chỉ xử lý tin nhắn mới từ khách
+    if (event !== 'new_message') {
+      return res.status(200).json({ status: 'ignored', reason: 'not new_message event' });
     }
 
-    const messageText = userMessage.message;
+    // Chỉ xử lý tin nhắn từ khách (from_customer = true)
+    if (!message.from_customer) {
+      return res.status(200).json({ status: 'ignored', reason: 'not from customer' });
+    }
+
+    const messageId = message.id;
+    const conversationId = conversation.id || body.conversation_id;
+    const messageText = message.message || message.text;
+
+    if (!messageText || !conversationId) {
+      return res.status(200).json({ status: 'ignored', reason: 'no message text' });
+    }
+
+    // Tránh xử lý tin nhắn trùng
+    if (processedMessages.has(messageId)) {
+      return res.status(200).json({ status: 'ignored', reason: 'already processed' });
+    }
+    processedMessages.add(messageId);
+
+    // Giữ set không quá lớn
+    if (processedMessages.size > 1000) {
+      const firstItem = processedMessages.values().next().value;
+      processedMessages.delete(firstItem);
+    }
+
     console.log(`[${conversationId}] Khách: ${messageText}`);
 
     // Khởi tạo lịch sử hội thoại
@@ -59,21 +86,18 @@ export default async function handler(req, res) {
       conversationHistory[conversationId] = [];
     }
 
-    // Thêm tin nhắn khách vào lịch sử (format Gemini)
     conversationHistory[conversationId].push({
       role: 'user',
       parts: [{ text: messageText }]
     });
 
-    // Giữ tối đa 20 lượt gần nhất
     if (conversationHistory[conversationId].length > 20) {
       conversationHistory[conversationId] = conversationHistory[conversationId].slice(-20);
     }
 
-    // Gọi Gemini API
+    // Gọi Gemini AI
     const aiReply = await callGemini(conversationHistory[conversationId]);
 
-    // Lưu phản hồi AI vào lịch sử
     conversationHistory[conversationId].push({
       role: 'model',
       parts: [{ text: aiReply }]
@@ -81,20 +105,17 @@ export default async function handler(req, res) {
 
     console.log(`[${conversationId}] AI: ${aiReply}`);
 
-    // Gửi lại Pancake V2
-    await sendToPancake(conversationId, pageId, aiReply);
+    // Gửi lại Pancake
+    await sendToPancake(conversationId, aiReply);
 
     return res.status(200).json({ status: 'success', reply: aiReply });
 
   } catch (error) {
-    console.error('Webhook error:', error);
+    console.error('Error:', error);
     return res.status(500).json({ error: error.message });
   }
 }
 
-// ============================================================
-// Gọi Gemini API (miễn phí)
-// ============================================================
 async function callGemini(history) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
 
@@ -122,10 +143,7 @@ async function callGemini(history) {
   return data.candidates[0].content.parts[0].text;
 }
 
-// ============================================================
-// Gửi tin nhắn lại Pancake V2
-// ============================================================
-async function sendToPancake(conversationId, pageId, message) {
+async function sendToPancake(conversationId, message) {
   const url = `https://pages.fm/api/v1/conversations/${conversationId}/messages`;
 
   const response = await fetch(url, {
@@ -133,7 +151,7 @@ async function sendToPancake(conversationId, pageId, message) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       token: PANCAKE_API_KEY,
-      page_id: pageId,
+      page_id: PAGE_ID,
       message: message
     })
   });
