@@ -1,0 +1,13 @@
+{
+  "name": "pancake-ai-webhook",
+  "version": "1.0.0",
+  "description": "Pancake V2 + Claude AI Auto Reply - Bệnh viện Thẩm Mỹ",
+  "main": "api/webhook.js",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  }
+}
