@@ -1,11 +1,4 @@
-// ============================================================
-// PANCAKE V2 + GOOGLE GEMINI AI - Auto Reply
-// Kết nối Facebook Messenger trực tiếp
-// ============================================================
-
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const PANCAKE_API_KEY = process.env.PANCAKE_API_KEY;
-const PAGE_ID = process.env.PAGE_ID;
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'myverifytoken123';
 
@@ -30,49 +23,35 @@ const conversationHistory = {};
 const processedMessages = new Set();
 
 export default async function handler(req, res) {
-  // ============================================================
-  // Facebook Webhook Verification (GET request)
-  // ============================================================
   if (req.method === 'GET') {
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
-
     if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-      console.log('Webhook verified!');
       return res.status(200).send(challenge);
-    } else {
-      console.log('Webhook verification failed');
-      return res.status(403).json({ error: 'Forbidden' });
     }
+    return res.status(403).json({ error: 'Forbidden' });
   }
 
-  // ============================================================
-  // Facebook Messenger Messages (POST request)
-  // ============================================================
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
   try {
     const body = req.body;
-
     if (body.object !== 'page') {
       return res.status(200).json({ status: 'ignored' });
     }
 
     for (const entry of body.entry || []) {
       for (const event of entry.messaging || []) {
-        // Chỉ xử lý tin nhắn text
         if (!event.message || !event.message.text) continue;
-        // Bỏ qua tin nhắn từ chính page
         if (event.message.is_echo) continue;
 
         const senderId = event.sender.id;
         const messageId = event.message.mid;
         const messageText = event.message.text;
 
-        // Tránh xử lý trùng
         if (processedMessages.has(messageId)) continue;
         processedMessages.add(messageId);
         if (processedMessages.size > 1000) {
@@ -82,7 +61,6 @@ export default async function handler(req, res) {
 
         console.log(`Khách [${senderId}]: ${messageText}`);
 
-        // Khởi tạo lịch sử hội thoại
         if (!conversationHistory[senderId]) {
           conversationHistory[senderId] = [];
         }
@@ -96,7 +74,6 @@ export default async function handler(req, res) {
           conversationHistory[senderId] = conversationHistory[senderId].slice(-20);
         }
 
-        // Gọi Gemini AI
         const aiReply = await callGemini(conversationHistory[senderId]);
 
         conversationHistory[senderId].push({
@@ -105,32 +82,38 @@ export default async function handler(req, res) {
         });
 
         console.log(`AI [${senderId}]: ${aiReply}`);
-
-        // Gửi lại Facebook Messenger
         await sendToMessenger(senderId, aiReply);
       }
     }
 
     return res.status(200).json({ status: 'success' });
-
   } catch (error) {
     console.error('Error:', error);
     return res.status(500).json({ error: error.message });
   }
 }
 
-// ============================================================
-// Gọi Gemini AI
-// ============================================================
 async function callGemini(history) {
   const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+
+  // Thêm system prompt vào tin nhắn đầu tiên
+  const contents = [
+    {
+      role: 'user',
+      parts: [{ text: SYSTEM_PROMPT + '\n\nHãy xác nhận bạn hiểu vai trò của mình.' }]
+    },
+    {
+      role: 'model',
+      parts: [{ text: 'Em hiểu rồi ạ. Em là tư vấn viên của Bệnh viện Thẩm Mỹ Dr Trần Thái Hưng, sẵn sàng tư vấn cho khách hàng.' }]
+    },
+    ...history
+  ];
 
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-      contents: history,
+      contents: contents,
       generationConfig: { maxOutputTokens: 500, temperature: 0.7 }
     })
   });
@@ -140,9 +123,6 @@ async function callGemini(history) {
   return data.candidates[0].content.parts[0].text;
 }
 
-// ============================================================
-// Gửi tin nhắn qua Facebook Messenger API
-// ============================================================
 async function sendToMessenger(recipientId, message) {
   const url = `https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`;
 
