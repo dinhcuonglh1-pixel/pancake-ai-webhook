@@ -1,4 +1,4 @@
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GROK_API_KEY = process.env.GROK_API_KEY;
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'myverifytoken123';
 
@@ -67,18 +67,18 @@ export default async function handler(req, res) {
 
         conversationHistory[senderId].push({
           role: 'user',
-          parts: [{ text: messageText }]
+          content: messageText
         });
 
         if (conversationHistory[senderId].length > 20) {
           conversationHistory[senderId] = conversationHistory[senderId].slice(-20);
         }
 
-        const aiReply = await callGemini(conversationHistory[senderId]);
+        const aiReply = await callGrok(conversationHistory[senderId]);
 
         conversationHistory[senderId].push({
-          role: 'model',
-          parts: [{ text: aiReply }]
+          role: 'assistant',
+          content: aiReply
         });
 
         console.log(`AI [${senderId}]: ${aiReply}`);
@@ -93,34 +93,27 @@ export default async function handler(req, res) {
   }
 }
 
-async function callGemini(history) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${GEMINI_API_KEY}`;
-
-  // Thêm system prompt vào tin nhắn đầu tiên
-  const contents = [
-    {
-      role: 'user',
-      parts: [{ text: SYSTEM_PROMPT + '\n\nHãy xác nhận bạn hiểu vai trò của mình.' }]
-    },
-    {
-      role: 'model',
-      parts: [{ text: 'Em hiểu rồi ạ. Em là tư vấn viên của Bệnh viện Thẩm Mỹ Dr Trần Thái Hưng, sẵn sàng tư vấn cho khách hàng.' }]
-    },
-    ...history
-  ];
-
-  const response = await fetch(url, {
+async function callGrok(history) {
+  const response = await fetch('https://api.x.ai/v1/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${GROK_API_KEY}`
+    },
     body: JSON.stringify({
-      contents: contents,
-      generationConfig: { maxOutputTokens: 500, temperature: 0.7 }
+      model: 'grok-3-mini',
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        ...history
+      ],
+      max_tokens: 500,
+      temperature: 0.7
     })
   });
 
-  if (!response.ok) throw new Error(`Gemini error: ${await response.text()}`);
+  if (!response.ok) throw new Error(`Grok error: ${await response.text()}`);
   const data = await response.json();
-  return data.candidates[0].content.parts[0].text;
+  return data.choices[0].message.content;
 }
 
 async function sendToMessenger(recipientId, message) {
