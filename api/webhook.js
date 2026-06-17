@@ -1,4 +1,4 @@
-const GROK_API_KEY = process.env.GROK_API_KEY;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'myverifytoken123';
 
@@ -74,7 +74,7 @@ export default async function handler(req, res) {
           conversationHistory[senderId] = conversationHistory[senderId].slice(-20);
         }
 
-        const aiReply = await callGrok(conversationHistory[senderId]);
+        const aiReply = await callGroq(conversationHistory[senderId]);
 
         conversationHistory[senderId].push({
           role: 'assistant',
@@ -93,15 +93,15 @@ export default async function handler(req, res) {
   }
 }
 
-async function callGrok(history) {
-  const response = await fetch('https://api.x.ai/v1/chat/completions', {
+async function callGroq(history) {
+  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${GROK_API_KEY}`
+      'Authorization': `Bearer ${GROQ_API_KEY}`
     },
     body: JSON.stringify({
-      model: 'grok-3-mini',
+      model: 'llama-3.3-70b-versatile',
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         ...history
@@ -111,7 +111,7 @@ async function callGrok(history) {
     })
   });
 
-  if (!response.ok) throw new Error(`Grok error: ${await response.text()}`);
+  if (!response.ok) throw new Error(`Groq error: ${await response.text()}`);
   const data = await response.json();
   return data.choices[0].message.content;
 }
