@@ -1,11 +1,13 @@
 // ============================================================
 // PANCAKE V2 + GOOGLE GEMINI AI - Auto Reply
-// Bệnh viện thẩm mỹ — MIỄN PHÍ
+// Kết nối Facebook Messenger trực tiếp
 // ============================================================
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const PANCAKE_API_KEY = process.env.PANCAKE_API_KEY;
 const PAGE_ID = process.env.PAGE_ID;
+const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'myverifytoken123';
 
 const SYSTEM_PROMPT = `Bạn là tư vấn viên chuyên nghiệp của Bệnh viện Thẩm Mỹ Dr Trần Thái Hưng.
 Nhiệm vụ của bạn là tư vấn, giải đáp thắc mắc và hỗ trợ khách hàng đặt lịch các dịch vụ thẩm mỹ.
@@ -24,91 +26,92 @@ QUY TẮC TƯ VẤN:
 - Trả lời ngắn gọn, không quá 4-5 câu mỗi lần
 - Luôn kết thúc bằng câu hỏi gợi mở`;
 
-// Lưu tin nhắn đã xử lý để tránh reply trùng
-const processedMessages = new Set();
-// Lưu lịch sử hội thoại
 const conversationHistory = {};
+const processedMessages = new Set();
 
 export default async function handler(req, res) {
-  // Endpoint kiểm tra server còn sống
+  // ============================================================
+  // Facebook Webhook Verification (GET request)
+  // ============================================================
   if (req.method === 'GET') {
-    return res.status(200).json({ status: 'ok', message: 'Pancake AI Bot đang chạy!' });
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+      console.log('Webhook verified!');
+      return res.status(200).send(challenge);
+    } else {
+      console.log('Webhook verification failed');
+      return res.status(403).json({ error: 'Forbidden' });
+    }
   }
 
+  // ============================================================
+  // Facebook Messenger Messages (POST request)
+  // ============================================================
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
   try {
-    // Nhận webhook từ Pancake khi có tin nhắn mới
     const body = req.body;
-    console.log('Webhook received:', JSON.stringify(body, null, 2));
 
-    // Lấy thông tin tin nhắn
-    const event = body.event;
-    const conversation = body.conversation || {};
-    const message = body.message || {};
-
-    // Chỉ xử lý tin nhắn mới từ khách
-    if (event !== 'new_message') {
-      return res.status(200).json({ status: 'ignored', reason: 'not new_message event' });
+    if (body.object !== 'page') {
+      return res.status(200).json({ status: 'ignored' });
     }
 
-    // Chỉ xử lý tin nhắn từ khách (from_customer = true)
-    if (!message.from_customer) {
-      return res.status(200).json({ status: 'ignored', reason: 'not from customer' });
+    for (const entry of body.entry || []) {
+      for (const event of entry.messaging || []) {
+        // Chỉ xử lý tin nhắn text
+        if (!event.message || !event.message.text) continue;
+        // Bỏ qua tin nhắn từ chính page
+        if (event.message.is_echo) continue;
+
+        const senderId = event.sender.id;
+        const messageId = event.message.mid;
+        const messageText = event.message.text;
+
+        // Tránh xử lý trùng
+        if (processedMessages.has(messageId)) continue;
+        processedMessages.add(messageId);
+        if (processedMessages.size > 1000) {
+          const first = processedMessages.values().next().value;
+          processedMessages.delete(first);
+        }
+
+        console.log(`Khách [${senderId}]: ${messageText}`);
+
+        // Khởi tạo lịch sử hội thoại
+        if (!conversationHistory[senderId]) {
+          conversationHistory[senderId] = [];
+        }
+
+        conversationHistory[senderId].push({
+          role: 'user',
+          parts: [{ text: messageText }]
+        });
+
+        if (conversationHistory[senderId].length > 20) {
+          conversationHistory[senderId] = conversationHistory[senderId].slice(-20);
+        }
+
+        // Gọi Gemini AI
+        const aiReply = await callGemini(conversationHistory[senderId]);
+
+        conversationHistory[senderId].push({
+          role: 'model',
+          parts: [{ text: aiReply }]
+        });
+
+        console.log(`AI [${senderId}]: ${aiReply}`);
+
+        // Gửi lại Facebook Messenger
+        await sendToMessenger(senderId, aiReply);
+      }
     }
 
-    const messageId = message.id;
-    const conversationId = conversation.id || body.conversation_id;
-    const messageText = message.message || message.text;
-
-    if (!messageText || !conversationId) {
-      return res.status(200).json({ status: 'ignored', reason: 'no message text' });
-    }
-
-    // Tránh xử lý tin nhắn trùng
-    if (processedMessages.has(messageId)) {
-      return res.status(200).json({ status: 'ignored', reason: 'already processed' });
-    }
-    processedMessages.add(messageId);
-
-    // Giữ set không quá lớn
-    if (processedMessages.size > 1000) {
-      const firstItem = processedMessages.values().next().value;
-      processedMessages.delete(firstItem);
-    }
-
-    console.log(`[${conversationId}] Khách: ${messageText}`);
-
-    // Khởi tạo lịch sử hội thoại
-    if (!conversationHistory[conversationId]) {
-      conversationHistory[conversationId] = [];
-    }
-
-    conversationHistory[conversationId].push({
-      role: 'user',
-      parts: [{ text: messageText }]
-    });
-
-    if (conversationHistory[conversationId].length > 20) {
-      conversationHistory[conversationId] = conversationHistory[conversationId].slice(-20);
-    }
-
-    // Gọi Gemini AI
-    const aiReply = await callGemini(conversationHistory[conversationId]);
-
-    conversationHistory[conversationId].push({
-      role: 'model',
-      parts: [{ text: aiReply }]
-    });
-
-    console.log(`[${conversationId}] AI: ${aiReply}`);
-
-    // Gửi lại Pancake
-    await sendToPancake(conversationId, aiReply);
-
-    return res.status(200).json({ status: 'success', reply: aiReply });
+    return res.status(200).json({ status: 'success' });
 
   } catch (error) {
     console.error('Error:', error);
@@ -116,6 +119,9 @@ export default async function handler(req, res) {
   }
 }
 
+// ============================================================
+// Gọi Gemini AI
+// ============================================================
 async function callGemini(history) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
 
@@ -123,43 +129,32 @@ async function callGemini(history) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      system_instruction: {
-        parts: [{ text: SYSTEM_PROMPT }]
-      },
+      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
       contents: history,
-      generationConfig: {
-        maxOutputTokens: 500,
-        temperature: 0.7
-      }
+      generationConfig: { maxOutputTokens: 500, temperature: 0.7 }
     })
   });
 
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Gemini API error: ${err}`);
-  }
-
+  if (!response.ok) throw new Error(`Gemini error: ${await response.text()}`);
   const data = await response.json();
   return data.candidates[0].content.parts[0].text;
 }
 
-async function sendToPancake(conversationId, message) {
-  const url = `https://pages.fm/api/v1/conversations/${conversationId}/messages`;
+// ============================================================
+// Gửi tin nhắn qua Facebook Messenger API
+// ============================================================
+async function sendToMessenger(recipientId, message) {
+  const url = `https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`;
 
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      token: PANCAKE_API_KEY,
-      page_id: PAGE_ID,
-      message: message
+      recipient: { id: recipientId },
+      message: { text: message }
     })
   });
 
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Pancake API error: ${err}`);
-  }
-
+  if (!response.ok) throw new Error(`Messenger error: ${await response.text()}`);
   return response.json();
 }
